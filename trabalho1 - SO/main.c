@@ -13,29 +13,33 @@ Professor: Endler
 #include <string.h>
 #include <sys/shm.h>
 
-void controller(){
+void controller() {
     int pidKernel = getppid(), auxRand;
     srand(time(NULL) ^ (getpid() << 16));
     
-    for(;;){
-        sleep(0.5);
+    for(;;) {
+        usleep(500000); // 0.5 segundos
         kill(pidKernel, SIGHUP); // envia iqr0
         auxRand = rand() % 10000;
-        if (auxRand <= 10 && auxRand > 5){
+        if (auxRand <= 10 && auxRand > 5) {
             kill(pidKernel, SIGUSR1); // envia iqr1
-        }else if (auxRand <= 5){
+        } else if (auxRand <= 5) {
             kill(pidKernel, SIGUSR2); // envia iqr2
         }
     }
 }
 
-#define MAX 100;
+#define MAX 100
 
-void processo(int pidKernel, int memoriaCompartilhadaD, int memoriaCompartilhadaF){
+void processo(int pidKernel, int memoriaCompartilhadaD, int memoriaCompartilhadaF) {
     raise(SIGSTOP);
 
     char* accessoMemoriaD = (char *)shmat(memoriaCompartilhadaD, 0, 0);
     char* accessoMemoriaF = (char *)shmat(memoriaCompartilhadaF, 0, 0);
+    if (accessoMemoriaD == (char *)-1 || accessoMemoriaF == (char *)-1) {
+        perror("Erro ao anexar memória compartilhada");
+        exit(1);
+    }
     
     srand(time(NULL) ^ (getpid() << 16));
 
@@ -45,16 +49,17 @@ void processo(int pidKernel, int memoriaCompartilhadaD, int memoriaCompartilhada
     while (PC < 100) {
         int random = rand() % 100;
         char dispotivo, func;
-        if (random < 15){
-            dispotivo = (random % 2) ? '1': '2';
-            if (random % 2){
+        if (random < 15) {
+            dispotivo = (random % 2) ? '1' : '2';
+            if (random % 2) {
                 func = 'r';
-            }else if (random % 3){
+            } else if (random % 3) {
                 func = 'w';
-            }else{
+            } else {
                 func = 'x';
             }
-            *accessoMemoriaD = dispotivo; *accessoMemoriaF = func;
+            *accessoMemoriaD = dispotivo; 
+            *accessoMemoriaF = func;
             printf("Dispositivo: %c : Func %c : sysCallProcess %c%c\n", dispotivo, func, *accessoMemoriaD, *accessoMemoriaF);
             kill(pidKernel, SIGINT);
             raise(SIGSTOP);
@@ -84,18 +89,105 @@ void kernelHandler(int signal) {
     } else if (signal == SIGTERM) {
         printf("Kernel recebeu um end of process de um processo...\n");
         processEndFlag++;
-    } else if (signal == SIGHUP){
+    } else if (signal == SIGHUP) {
         irq0 = 1;
-    } else if (signal == SIGUSR1){
-        printf("Kernel recebeu um sinal IRQ1 do controller...\n");
+    } else if (signal == SIGUSR1) {
+       // printf("Kernel recebeu um sinal IRQ1 do controller...\n");
         irq1 = 1;
-    } else if (signal == SIGUSR2){
-        printf("Kernel recebeu um sinal IRQ2 do controller...\n");
+    } else if (signal == SIGUSR2) {
+        //printf("Kernel recebeu um sinal IRQ2 do controller...\n");
         irq2 = 1;
     }
 }
 
-int main(void){
+// Estrutura do nó
+typedef struct Node {
+    int dispositivo;
+    int processo;
+    struct Node* next;
+} Node;
+
+// Estrutura da fila
+typedef struct Fila {
+    Node* head;
+    Node* tail;
+} Fila;
+
+// Função para criar um novo nó
+Node* create_node(int dispositivo, int processo) {
+    Node* new_node = (Node*)malloc(sizeof(Node));
+    if (!new_node) {
+        perror("Erro ao alocar memória para o nó");
+        exit(EXIT_FAILURE);
+    }
+    new_node->dispositivo = dispositivo;
+    new_node->processo = processo;
+    new_node->next = NULL;
+    return new_node;
+}
+
+// Função para verificar se a fila está vazia
+int is_empty(Fila* queue) {
+    return queue->head == NULL;
+}
+
+// Função para inicializar a fila
+Fila* create_Fila() {
+    Fila* fila = (Fila*)malloc(sizeof(Fila));
+    if (!fila) {
+        perror("Erro ao alocar memória para a fila");
+        exit(EXIT_FAILURE);
+    }
+    fila->head = NULL;
+    fila->tail = NULL;
+    return fila;
+}
+
+// Função para adicionar um nó ao final da fila
+void enFila(Fila* fila, int dispositivo, int processo) {
+    Node* new_node = create_node(dispositivo, processo);
+    if (is_empty(fila)) {
+        fila->head = new_node;
+        fila->tail = new_node;
+    } else {
+        fila->tail->next = new_node;
+        fila->tail = new_node;
+    }
+}
+
+// Função para remover um nó do início da fila
+Node* deFila(Fila* fila) {
+    if (is_empty(fila)) {
+        printf("Fila está vazia\n");
+        return NULL;
+    }
+    Node* temp = fila->head;
+    fila->head = fila->head->next;
+    if (fila->head == NULL) {
+        fila->tail = NULL;
+    }
+    return temp;
+}
+
+// Função para obter o nó no início da fila sem removê-lo
+Node* peek(Fila* fila) {
+    if (is_empty(fila)) {
+        printf("Fila está vazia\n");
+        return NULL;
+    }
+    return fila->head;
+}
+
+// Função para liberar a memória da fila
+void free_Fila(Fila* fila) {
+    while (!is_empty(fila)) {
+        Node* temp = deFila(fila);
+        free(temp);
+    }
+    free(fila);
+}
+
+int main(void) {
     int pid = getpid();
     printf("Kernel criado com pid %d\n\n", pid);
     signal(SIGINT, kernelHandler);
@@ -112,24 +204,23 @@ int main(void){
     }
 
     int nProcessos = 0;
-    while (nProcessos < 3 || nProcessos > 6){
+    while (nProcessos < 3 || nProcessos > 6) {
         printf("Insira o numero de processos (3-6): ");
         scanf("%d", &nProcessos);
     }
 
     int* processos = (int*)malloc(sizeof(int) * nProcessos);
-    for (int i = 0; i < nProcessos; i++)
-    {
+    for (int i = 0; i < nProcessos; i++) {
         processos[i] = fork();
-        if (processos[i] == 0){
+        if (processos[i] == 0) {
             processo(pid, memoriaDispositivo, memoriaFuncao);
             exit(0);
         }
     }
 
     int pidController = fork();
-    if(pidController == 0){
-        controller(pid);
+    if (pidController == 0) {
+        controller();
         exit(0);
     }
 
@@ -142,32 +233,53 @@ int main(void){
     
     int processoAtual = 0;
     int* estados = (int*)malloc(sizeof(int) * nProcessos);
-    for (int i = 0; i < nProcessos; i++)
-    {
+    for (int i = 0; i < nProcessos; i++) {
         estados[i] = 0;
     }
+
+    Fila* fila = create_Fila();
 
     // Loop principal do kernel
     for (;;) {
         if (sysCallProcessFlag) {
-            printf("Processando sysCallProcess\n");
-            sysCallProcessFlag = 0; // Reseta a flag de sysCallProcess após processar
+            printf("\nProcessando sysCallProcess %d\n", processoAtual);
             printf("Syscall: %c%c\n", *accessoMemoriaD, *accessoMemoriaF);
             estados[processoAtual] = 1;
-
+            enFila(fila, *accessoMemoriaD - '0', processoAtual);
+            irq0 = 1;
+            sysCallProcessFlag = 0; // Reseta a flag de sysCallProcess após processar
         }
-        if(irq0){
+        if (irq1) {
+            Node* node = peek(fila);
+            if (node->dispositivo == 1) {
+                estados[node->processo] = 0;
+                kill(processos[node->processo], SIGCONT);
+                free(deFila(fila));
+            }
+            irq1 = 0;
+        }
+        if (irq2) {
+            Node* node = peek(fila);
+            if (node->dispositivo == 2) {
+                estados[node->processo] = 0;
+                kill(processos[node->processo], SIGCONT);
+                free(deFila(fila));
+            }
+            irq2 = 0;
+        }
+        if (irq0) {
             kill(processos[processoAtual], SIGSTOP);
-            processoAtual = (processoAtual + 1) % nProcessos;
+            for (int i = 0; i < 3; i++)
+            {
+                if (estados[processoAtual] == 0) {
+                    break;
+                }
+                processoAtual = (processoAtual + 1) % nProcessos;
+            }
+            
             kill(processos[processoAtual], SIGCONT);
             irq0 = 0;
         }
-        // if(irq1){
-            
-        // }
-        // if(rq2){
-
-        // }
         if (processEndFlag == nProcessos) {
             printf("Todos os processos terminaram!\nTerminando kernel...\n");
             kill(pidController, SIGKILL);
@@ -188,6 +300,10 @@ int main(void){
         perror("Erro ao remover memória compartilhada");
         exit(1);
     }
+
+    free(processos);
+    free(estados);
+    free_Fila(fila);
 
     return 0;
 }
